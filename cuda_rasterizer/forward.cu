@@ -105,7 +105,7 @@ __device__ void compute_transmat(
 
 	glm::mat3x4 ndc2pix = glm::mat3x4(
 		glm::vec4(float(W) / 2.0, 0.0, 0.0, float(W-1) / 2.0),
-		glm::vec4(0.0, float(H) / 2.0, 0.0, float(H-1) / 2.0),
+		glm::vec4(0.0, float(H) / 2.0, 0.0, float(H-1) / 1.0),
 		glm::vec4(0.0, 0.0, 0.0, 1.0)
 	);
 
