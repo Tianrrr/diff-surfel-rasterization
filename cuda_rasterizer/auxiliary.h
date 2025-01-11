@@ -235,6 +235,18 @@ inline __device__ glm::mat3 quat_to_rotmat(const glm::vec4 quat) {
 }
 
 
+inline __device__ glm::mat3 so3_to_rotmat(const glm::vec3 so3) {
+	// so3 to rotation matrix
+	float theta = glm::length(so3);
+	glm::vec3 w = glm::normalize(so3);
+
+	// glm matrices are column-major
+	glm::mat3 skew = glm::mat3(0, w.z, -w.y, -w.z, 0, w.x, w.y, -w.x, 0);
+
+	glm::mat3 rotation = cos(theta) * glm::mat3(1.f) + (1 - cos(theta))* w * glm::transpose(w) + sin(theta) * skew;
+	return rotation;
+}
+
 inline __device__ glm::vec4
 quat_to_rotmat_vjp(const glm::vec4 quat, const glm::mat3 v_R) {
 	float s = rsqrtf(

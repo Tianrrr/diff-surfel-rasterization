@@ -42,6 +42,7 @@ namespace CudaRasterizer
 			const float* scales,
 			const float scale_modifier,
 			const float* rotations,
+			const float* so3s,
 			const float* transMat_precomp,
 			const float* viewmatrix,
 			const float* projmatrix,

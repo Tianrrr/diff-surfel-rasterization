@@ -92,7 +92,7 @@ __device__ void compute_transmat(
 	// center of Gaussians in the camera coordinate
 	glm::mat3x4 splat2world = glm::mat3x4(
 		glm::vec4(L[0], 0.0),
-		glm::vec4(L[1], 0.0),
+		glm::vec4(L[1], 0.0),                
 		glm::vec4(p_orig.x, p_orig.y, p_orig.z, 1)
 	);
 
@@ -143,6 +143,110 @@ __device__ bool compute_aabb(
 	extent = {h.x, h.y};
 	return true;
 }
+__device__ glm::mat4 calculateInvTransformation(const glm::mat3& R, const glm::vec3& t)
+{
+	glm::mat3 invR = glm::transpose(R);
+	glm::vec3 invt = -invR * t;
+
+	glm::mat4 invT = glm::mat4(
+		glm::vec4(invR[0], 0.0),
+		glm::vec4(invR[1], 0.0),
+		glm::vec4(invR[2], 0.0),
+		glm::vec4(invt.x, invt.y, invt.z, 1)
+	);
+
+	return invT;
+}
+
+__device__ void quadratic_intersection(glm::vec4& o, glm::vec4& d, float& t)
+{
+
+	glm::mat4 Q =  glm::mat4(
+		glm::vec4(s1, 0.0, 0.0, 0.0),
+		glm::vec4(0.0, s2, 0.0, 0.0),
+		glm::vec4(0.0, 0.0, 0.0, -0.5),
+		glm::vec4(0.0, 0.0, -0.5, 0.0));
+
+
+
+
+	float Aq = glm::dot(d, Q * d);
+	float Bq = 2 * glm::dot(o, Q * d);
+	float Cq = glm::dot(o, Q * o);
+
+	//计算判别式
+	float discriminant = Bq*Bq - 4 * Aq * Cq;
+	if (Aq < 1e-6)
+	{
+		t = -Cq / Bq;
+
+	}
+	else
+	{
+			if (discriminant == 0)
+			{
+				t = -Bq / (2 * Aq );
+			}
+			else if (discriminant > 0)
+			{
+				// float t1 = (-Bq + sqrt(discriminant)) / (2 * Aq);
+				float t2 = (-Bq - sqrt(discriminant)) / (2 * Aq);
+				t = t2;
+			}
+	}
+
+}
+
+// calculate splat2view and view2splate
+__device__ void calculateViewSplat(
+	const float3& p_orig,
+	const glm::vec2 scale,
+	float mod,
+	const glm::vec4 rot,
+	const float* viewmatrix,
+	glm::mat4& View2splat
+	)
+{
+	glm::mat3 R = quat_to_rotmat(rot);
+	glm::mat3 S = scale_to_mat(scale, mod);
+	glm::mat3 L = R * S;
+
+	glm::mat4 splat2world = glm::mat4(
+		glm::vec4(L[0], 0.0),
+		glm::vec4(L[1], 0.0),
+		glm::vec4(L[2], 0.0),
+		glm::vec4(p_orig.x, p_orig.y, p_orig.z, 1)
+	);
+
+	glm::vec3 translation(p_orig.x, p_orig.y, p_orig.z);
+
+	glm::mat4 world2splat = calculateInvTransformation(L, translation);
+
+	glm::mat4 world2view = glm::mat4(
+		viewmatrix[0], viewmatrix[4], viewmatrix[8], viewmatrix[12],
+		viewmatrix[1], viewmatrix[5], viewmatrix[9], viewmatrix[13],
+		viewmatrix[2], viewmatrix[6], viewmatrix[10], viewmatrix[14],
+		viewmatrix[3], viewmatrix[7], viewmatrix[11], viewmatrix[15]
+	);  
+
+
+
+	glm::mat4 R_world2view = glm::mat3(
+		viewmatrix[0], viewmatrix[1], viewmatrix[2],
+		viewmatrix[4], viewmatrix[5], viewmatrix[6],
+		viewmatrix[8], viewmatrix[9], viewmatrix[10]
+	);
+
+	glm::vec3 t_world2view = glm::vec3(viewmatrix[12], viewmatrix[13], viewmatrix[14]);
+
+	glm::mat4 view2world = calculateInvTransformation(R_world2view, t_world2view); 
+
+	View2splat = glm::transpose(view2world) * glm::transpose(world2splat);
+
+	// glm::mat4 Q_view = glm::inverse(splat2view) * glm::transpose(Q) * glm::transpose(glm::inverse(splat2view));
+ 	// Q = view2splat * glm::transpose(Q_splat) * glm::transpose(view2splat);
+}
+
 
 // Perform initial steps for each Gaussian prior to rasterization.
 template<int C>
@@ -166,6 +270,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float2* points_xy_image,
 	float* depths,
 	float* transMats,
+	float* View2splat,
 	float* rgb,
 	float4* normal_opacity,
 	const dim3 grid,
@@ -205,6 +310,15 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		);
 		normal = make_float3(0.0, 0.0, 1.0);
 	}
+
+	glm::mat4 V2s;
+	calculateViewSplat(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], viewmatrix, V2s);
+	float4 *View2splat_ptr = (float4*)View2splat;
+
+	View2splat_ptr[idx * 3 + 0] = {V2s[0][0], V2s[0][1], V2s[0][2], V2s[0][3]};		
+	View2splat_ptr[idx * 3 + 1] = {V2s[1][0], V2s[1][1], V2s[1][2], V2s[1][3]};
+	View2splat_ptr[idx * 3 + 2] = {V2s[2][0], V2s[2][1], V2s[2][2], V2s[2][3]};
+
 
 #if DUAL_VISIABLE
 	float cos = -sumf3(p_view * normal);
@@ -263,6 +377,7 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ features,
 	const float* __restrict__ transMats,
+	const float* __restrict__ View2splat,
 	const float* __restrict__ depths,
 	const float4* __restrict__ normal_opacity,
 	float* __restrict__ final_T,
@@ -297,6 +412,11 @@ renderCUDA(
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
+
+
+	__shared__ float4 collected_View2splat_1[BLOCK_SIZE];
+	__shared__ float4 collected_View2splat_2[BLOCK_SIZE];
+	__shared__ float4 collected_View2splat_3[BLOCK_SIZE];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -337,12 +457,68 @@ renderCUDA(
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+
+			collected_View2splat_1[block.thread_rank()] = {View2splat[12 * coll_id+0], View2splat[12 * coll_id+1], View2splat[12 * coll_id+2], View2splat[12 * coll_id+3]};
+			collected_View2splat_2[block.thread_rank()] = {View2splat[12 * coll_id+4], View2splat[12 * coll_id+5], View2splat[12 * coll_id+6], View2splat[12 * coll_id+7]};
+			collected_View2splat_3[block.thread_rank()] = {View2splat[12 * coll_id+8], View2splat[12 * coll_id+9], View2splat[12 * coll_id+10], View2splat[12 * coll_id+11]};
+
 		}
 		block.sync();
 
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
+
+
+			// compute intersection and depth for Paraboloid
+		
+			float ndcX = (2.0f * pixf.x - W + 1) / W ;
+			float ndcY =(2.0f * pixf.y - H + 1) / H;
+
+			glm::vec3 pixInView;
+
+
+			pixInView.x = ndcX * W / (2.0f * focal_x);
+			pixInView.y = ndcY * H / (2.0f * focal_y);
+			pixInView.z = 1.0f;
+
+
+			float4 View2splat_1 = collected_View2splat_1[j];
+			float4 View2splat_2 = collected_View2splat_2[j];
+			float4 View2splat_3 = collected_View2splat_3[j];
+			
+			glm::vec4 DirInSplat;
+			DirInSplat.x = pixInView.x*View2splat_1.x + pixInView.y*View2splat_1.y + pixInView.z*View2splat_1.z;
+			DirInSplat.y = pixInView.x*View2splat_2.x + pixInView.y*View2splat_2.y + pixInView.z*View2splat_2.z;
+			DirInSplat.z = pixInView.x*View2splat_3.x + pixInView.y*View2splat_3.y + pixInView.z*View2splat_3.z;
+			DirInSplat.w = 0.0;
+
+			glm::vec4 OriginInSplat;
+			OriginInSplat.x = View2splat_1.w;
+			OriginInSplat.y = View2splat_2.w;
+			OriginInSplat.z = View2splat_3.w;
+			OriginInSplat.w = 1.0f;
+
+
+			float t = 0;
+			quadratic_intersection(OriginInSplat, DirInSplat, t);
+			if (t== 0) continue;
+
+			glm::vec4 PointInSplat = OriginInSplat + t * DirInSplat;
+			float z = PointInSplat.x * View2splat_1.z + 
+					PointInSplat.y * View2splat_2.z + 
+					PointInSplat.z * View2splat_3.z -
+					(View2splat_1.w * View2splat_1.z +
+					View2splat_2.w * View2splat_2.z +
+					View2splat_3.w * View2splat_3.z);
+
+			
+
+
+			/////////////////////////////////////////////////////////////////////
+			////////////////////////////////////////////////////////////////////
+
+
 			// Keep track of current position in range
 			contributor++;
 
@@ -363,10 +539,16 @@ renderCUDA(
 			// Add low pass filter
 			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
 			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y); 
-			float rho = min(rho3d, rho2d);
+			// float rho = min(rho3d, rho2d);
+			float rho = rho3d;
+
 
 			// compute depth
-			float depth = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
+			// float depth = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
+
+			float depth = z;
+			
+
 			// if a point is too small, its depth is not reliable?
 			// depth = (rho3d <= rho2d) ? depth : Tw.z 
 			if (depth < near_n) continue;
@@ -456,6 +638,7 @@ void FORWARD::render(
 	const float2* means2D,
 	const float* colors,
 	const float* transMats,
+	const float* View2splat,
 	const float* depths,
 	const float4* normal_opacity,
 	float* final_T,
@@ -472,6 +655,7 @@ void FORWARD::render(
 		means2D,
 		colors,
 		transMats,
+		View2splat,
 		depths,
 		normal_opacity,
 		final_T,
@@ -501,6 +685,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float2* means2D,
 	float* depths,
 	float* transMats,
+	float* View2splat,
 	float* rgb,
 	float4* normal_opacity,
 	const dim3 grid,
@@ -528,6 +713,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		means2D,
 		depths,
 		transMats,
+		View2splat,
 		rgb,
 		normal_opacity,
 		grid,
